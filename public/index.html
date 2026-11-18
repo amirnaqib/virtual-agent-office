@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Virtual Agent Office</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Crect width='16' height='16' fill='%23222738'/%3E%3Crect x='2' y='9' width='12' height='4' fill='%23d9a66b'/%3E%3Crect x='5' y='5' width='6' height='5' fill='%23c8ccd6'/%3E%3Crect x='7' y='7' width='2' height='1' fill='%23f2c94c'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img id="brandAvatar" class="avatar sm" alt="">
+      <div>
+        <h1 id="officeTitle">Virtual Agent Office</h1>
+        <div class="sub" title="Workspace folder the agents work in">📁 <span id="wsPath">…</span></div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span class="pill gold" id="demoPill" hidden title="Some agents use the simulated Demo engine">DEMO</span>
+      <span class="conn" id="conn" title="Disconnected"></span>
+      <button class="btn" id="btnHire">＋ Hire agent</button>
+      <button class="btn" id="btnBoss" title="Edit your own character and office name">👔 Boss</button>
+      <button class="btn" id="btnSettings">⚙ Settings</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage" id="stage">
+      <canvas id="office" aria-label="Pixel office with your agents"></canvas>
+      <div class="hint">Click a character to see what they're doing · click the boss desk for your inbox</div>
+    </section>
+
+    <aside class="side">
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="boss">Boss desk <span class="badge" id="inboxBadge" hidden>0</span></button>
+        <button class="tab" data-tab="team">Team</button>
+        <button class="tab" data-tab="log">Activity</button>
+      </nav>
+
+      <div class="panel" id="panel-boss">
+        <div class="card composer">
+          <div class="card-title">New task</div>
+          <textarea id="taskText" rows="4" placeholder="What should the team do? e.g. Add a dark mode toggle to the settings page and write tests for it."></textarea>
+          <div class="row">
+            <select id="taskTarget" title="Who gets this task"></select>
+            <button class="btn primary" id="btnSend">Send ▶</button>
+          </div>
+          <div class="tiny muted">Ctrl/⌘ + Enter to send. The leader splits it, the team works at their desks, then the leader brings you the report.</div>
+        </div>
+        <div id="taskNow"></div>
+        <div class="section-head"><span class="card-title">Inbox</span><button class="link" id="btnClearHistory">clear</button></div>
+        <div id="inbox" class="inbox"></div>
+      </div>
+
+      <div class="panel" id="panel-team" hidden>
+        <div id="teamList" class="team-list"></div>
+        <button class="btn block" id="btnHire2">＋ Hire another agent</button>
+      </div>
+
+      <div class="panel" id="panel-log" hidden>
+        <div class="row">
+          <select id="logFilter"><option value="">Everyone</option></select>
+          <label class="check tiny"><input type="checkbox" id="logVerbose"> show raw output</label>
+        </div>
+        <div id="logFeed" class="feed"></div>
+      </div>
+
+      <div class="panel" id="panel-agent" hidden>
+        <button class="link" id="btnBack">← back</button>
+        <div id="agentHead" class="agent-head"></div>
+        <div class="row wrap" id="agentActions"></div>
+        <div class="card composer" id="directBox" hidden>
+          <div class="card-title">Direct task</div>
+          <textarea id="directText" rows="3" placeholder="Skip the leader and give this agent a task directly."></textarea>
+          <div class="row"><span class="spacer"></span><button class="btn primary" id="btnDirectSend">Send ▶</button></div>
+        </div>
+        <div class="card-title">Terminal</div>
+        <div id="agentTerm" class="term"></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Character builder -->
+  <dialog id="dlgBuilder" class="dlg wide">
+    <form id="builderForm" method="dialog">
+      <header>
+        <h2 id="builderTitle">Hire an agent</h2>
+        <button class="x" value="cancel" formnovalidate aria-label="Close">✕</button>
+      </header>
+      <div class="builder">
+        <div class="preview">
+          <div class="preview-box"><canvas id="previewCanvas" width="180" height="200"></canvas></div>
+          <div class="row center">
+            <button type="button" class="btn sm" id="pvLeft" aria-label="Turn left">◀</button>
+            <button type="button" class="btn sm" id="pvPose">Walk</button>
+            <button type="button" class="btn sm" id="pvRight" aria-label="Turn right">▶</button>
+          </div>
+          <button type="button" class="btn block" id="btnRandom">🎲 Randomize look</button>
+        </div>
+        <div class="fields">
+          <div class="grid2">
+            <label>Name<input name="name" maxlength="24" required autocomplete="off"></label>
+            <label data-agent-only>Role / title<input name="role" maxlength="48" placeholder="Backend Engineer" autocomplete="off"></label>
+            <label data-boss-only hidden>Office name<input name="officeName" maxlength="48" autocomplete="off"></label>
+          </div>
+          <fieldset>
+            <legend>Look</legend>
+            <div class="field"><span>Skin</span><div class="swatches" data-key="skin"></div></div>
+            <div class="field"><span>Hair</span><select name="hairStyle"></select><div class="swatches" data-key="hairColor"></div></div>
+            <div class="field"><span>Top</span><div class="swatches" data-key="shirt"></div></div>
+            <div class="field"><span>Bottom</span><div class="swatches" data-key="pants"></div></div>
+            <div class="field"><span>Shoes</span><div class="swatches" data-key="shoes"></div></div>
+            <div class="field"><span>Eyewear</span><select name="eyewear"></select><span>Extra</span><select name="extra"></select></div>
+            <div class="field"><span>Extra colour</span><div class="swatches" data-key="extraColor"></div></div>
+            <div class="field" id="spriteField" hidden><span>Pack sprite</span><select name="sprite"><option value="">Built-in pixel art</option></select></div>
+          </fieldset>
+          <fieldset data-agent-only>
+            <legend>Brain</legend>
+            <div class="grid2">
+              <label>Engine<select name="engine"></select></label>
+              <label>Model<input name="model" placeholder="default" autocomplete="off"></label>
+            </div>
+            <div class="tiny muted" id="engineInfo"></div>
+            <label>Autonomy during work
+              <select name="autonomy">
+                <option value="safe">Read-only — can look, can't change files</option>
+                <option value="edit">Auto-edit — may edit files in the workspace</option>
+                <option value="full">Full auto — edits & shell without asking (careful!)</option>
+              </select>
+            </label>
+            <div class="tiny muted" id="autonomyInfo"></div>
+            <label id="customRow">Command template<input name="customCommand" placeholder="aider --yes-always --message {prompt}" autocomplete="off"></label>
+            <label>Extra CLI args<input name="extraArgs" placeholder="optional, e.g. --add-dir ../shared" autocomplete="off"></label>
+            <label>Personality & standing instructions<textarea name="persona" rows="3" maxlength="800" placeholder="e.g. Friendly perfectionist. Always writes tests. Prefers TypeScript."></textarea></label>
+            <label class="check"><input type="checkbox" name="makeLeader"> ★ Make this agent the team leader</label>
+          </fieldset>
+        </div>
+      </div>
+      <footer>
+        <button type="button" class="btn danger" id="btnFire" data-agent-only>Remove from office</button>
+        <span class="spacer"></span>
+        <button class="btn" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn primary" value="save" id="btnSaveAgent">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Settings -->
+  <dialog id="dlgSettings" class="dlg">
+    <form id="settingsForm" method="dialog">
+      <header><h2>Settings</h2><button class="x" value="cancel" formnovalidate aria-label="Close">✕</button></header>
+      <div class="dlg-body">
+        <label>Workspace folder (where agents work)<input name="workspace" required autocomplete="off"></label>
+        <div class="grid2">
+          <label>Timeout per agent run (minutes)<input name="timeoutMin" type="number" min="1" max="240"></label>
+          <label>Walking pace (ms per trip)<input name="walkDelayMs" type="number" min="0" max="10000" step="100"></label>
+        </div>
+        <label class="check"><input type="checkbox" name="saveReports"> Save every final report as Markdown in <code>.agent-office/reports/</code></label>
+        <div class="section-head"><span class="card-title">Engines on this machine</span><button type="button" class="link" id="btnRefreshEngines">re-scan</button></div>
+        <div id="engineTable" class="engine-table"></div>
+        <div class="tiny muted" id="pathsInfo"></div>
+      </div>
+      <footer><span class="spacer"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" value="save">Save</button></footer>
+    </form>
+  </dialog>
+
+  <!-- Report viewer -->
+  <dialog id="dlgReport" class="dlg wide">
+    <form method="dialog">
+      <header><h2 id="reportTitle">Report</h2><button class="x" value="close" aria-label="Close">✕</button></header>
+      <div class="dlg-body">
+        <div id="reportMeta" class="tiny muted"></div>
+        <article id="reportBody" class="md"></article>
+        <details id="reportTeamWrap"><summary>Team reports</summary><div id="reportTeam"></div></details>
+      </div>
+      <footer><span class="tiny muted" id="reportFile"></span><span class="spacer"></span><button type="button" class="btn" id="btnCopyReport">Copy Markdown</button><button class="btn primary" value="close">Close</button></footer>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>

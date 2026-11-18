@@ -1,0 +1,6 @@
+node_modules/
+.agent-office/
+*.log
+.DS_Store
+# Paid / licensed asset packs never belong in the repo
+public/assets/custom/
