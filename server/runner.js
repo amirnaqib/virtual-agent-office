@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ENGINES, createParser, readOutFile } from './engines.js';
+import { ENGINES, createParser, readOutFile, BRIDGE } from './engines.js';
 import { isWin, which, splitArgs, stripAnsi, delay, truncate } from './util.js';
-import { mockOutput } from './mock.js';
+import { mockOutput, mockQuestion, mockReply } from './mock.js';
 
 const MAX_CAPTURE = 4 * 1024 * 1024;
 const running = new Set();
@@ -13,7 +13,7 @@ const running = new Set();
  * Run one agent turn.
  * @returns {Promise<{ok:boolean,text:string,error?:string,exitCode?:number,durationMs:number,aborted?:boolean}>}
  */
-export async function runAgent({ agent, prompt, phase, workspace, timeoutMs, signal, onActivity, mock }) {
+export async function runAgent({ agent, prompt, phase, workspace, timeoutMs, signal, onActivity, mock, office }) {
   const engine = ENGINES[agent.engine] || ENGINES.mock;
   const autonomy = phase === 'work' ? (agent.autonomy || 'edit') : 'safe';
   const started = Date.now();
@@ -29,7 +29,7 @@ export async function runAgent({ agent, prompt, phase, workspace, timeoutMs, sig
     const extra = splitArgs(agent.extraArgs || '');
     let spec;
     try {
-      spec = engine.build({ agent, autonomy, extra, prompt, workspace, tmpFile, phase });
+      spec = engine.build({ agent, autonomy, extra, prompt, workspace, tmpFile, phase, office });
     } catch (e) {
       return { ok: false, text: '', error: e.message, durationMs: Date.now() - started };
     }
@@ -42,6 +42,7 @@ export async function runAgent({ agent, prompt, phase, workspace, timeoutMs, sig
       args: spec.args,
       cwd: workspace,
       stdin: spec.stdin ? prompt : null,
+      env: officeEnv(office),
       timeoutMs,
       signal,
       onLine(line, stream) {
@@ -70,18 +71,49 @@ export async function runAgent({ agent, prompt, phase, workspace, timeoutMs, sig
   }
 }
 
-async function runMock({ agent, phase, signal, emit, mock, started }) {
+/** Every agent run can reach the office: VAO_* for the bridge, and no proxy for localhost. */
+function officeEnv(office) {
+  if (!office) return {};
+  const np = [process.env.NO_PROXY || process.env.no_proxy, '127.0.0.1', 'localhost'].filter(Boolean).join(',');
+  return { VAO_URL: office.url, VAO_TOKEN: office.token, VAO_AGENT: office.agentName, VAO_BRIDGE: BRIDGE, NO_PROXY: np, no_proxy: np };
+}
+
+async function runMock({ agent, phase, signal, emit, mock = {}, started }) {
   const { lines, text, durationMs } = mockOutput({ agent, phase, ...mock });
   const step = durationMs / (lines.length + 1);
+  const cancelled = () => ({ ok: false, aborted: true, text: '', error: 'Cancelled', durationMs: Date.now() - started });
+  const chat = phase === 'work' ? mock.chat : null;
+  const targets = (mock.chatTargets || []).filter((n) => n !== agent.name);
+  const askAt = chat && targets.length && Math.random() < 0.7 ? 1 + Math.floor(Math.random() * Math.max(1, lines.length - 2)) : -1;
+  const notes = [];
   emit('sys', `simulated ${phase} · Demo engine`);
-  for (const l of lines) {
+  for (let i = 0; i < lines.length; i++) {
     await delay(step * (0.6 + Math.random() * 0.8), signal);
-    if (signal?.aborted) return { ok: false, aborted: true, text: '', error: 'Cancelled', durationMs: Date.now() - started };
-    emit(l.kind, l.text);
+    if (signal?.aborted) return cancelled();
+    emit(lines[i].kind, lines[i].text);
+    if (!chat) continue;
+    try {
+      // answer anything waiting in my inbox
+      const inbox = await chat.call('inbox', {});
+      for (const m of inbox.messages || []) {
+        if (m.kind === 'reply') continue;
+        await delay(700, signal);
+        await chat.call('send', { reply_to: m.id, message: mockReply(m.text, agent) });
+      }
+      if (i === askAt) {
+        const to = targets[Math.floor(Math.random() * targets.length)];
+        const question = mockQuestion(agent);
+        emit('tool', `office.ask ${to}: ${question}`);
+        const r = await chat.call('ask', { to, question, wait_seconds: 25 });
+        if (signal?.aborted) return cancelled();
+        if (r.answer) { emit('say', `${r.answer.fromName}: ${r.answer.text}`); notes.push(`- Checked with ${r.answer.fromName}: ${r.answer.text}`); }
+        else emit('say', 'No answer yet, going with my best guess.');
+      }
+    } catch (e) { emit('err', `office chat: ${e.message}`); }
   }
   await delay(step, signal);
-  if (signal?.aborted) return { ok: false, aborted: true, text: '', error: 'Cancelled', durationMs: Date.now() - started };
-  return { ok: true, text, exitCode: 0, durationMs: Date.now() - started };
+  if (signal?.aborted) return cancelled();
+  return { ok: true, text: notes.length ? `${text}\n${notes.join('\n')}` : text, exitCode: 0, durationMs: Date.now() - started };
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +141,7 @@ function buildSpawn(cmd, args) {
   return { file: resolved, args, opts: {} };
 }
 
-export function spawnStreaming({ cmd, args, cwd, stdin, timeoutMs, signal, onLine }) {
+export function spawnStreaming({ cmd, args, cwd, stdin, env, timeoutMs, signal, onLine }) {
   return new Promise((resolve) => {
     const sp = buildSpawn(cmd, args);
     if (sp.error) return resolve({ error: sp.error, stdout: '', stderr: '' });
@@ -119,7 +151,7 @@ export function spawnStreaming({ cmd, args, cwd, stdin, timeoutMs, signal, onLin
     try {
       child = spawn(sp.file, sp.args, {
         cwd,
-        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', ...env },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         detached: !isWin,

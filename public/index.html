@@ -38,7 +38,8 @@
       <nav class="tabs" role="tablist">
         <button class="tab active" data-tab="boss">Boss desk <span class="badge" id="inboxBadge" hidden>0</span></button>
         <button class="tab" data-tab="team">Team</button>
-        <button class="tab" data-tab="log">Activity</button>
+        <button class="tab" data-tab="chat">Chat <span class="badge" id="chatBadge" hidden>0</span></button>
+        <button class="tab" data-tab="log">Log</button>
       </nav>
 
       <div class="panel" id="panel-boss">
@@ -59,6 +60,15 @@
       <div class="panel" id="panel-team" hidden>
         <div id="teamList" class="team-list"></div>
         <button class="btn block" id="btnHire2">＋ Hire another agent</button>
+      </div>
+
+      <div class="panel chat-panel" id="panel-chat" hidden>
+        <div id="chatList" class="chat-list"></div>
+        <div class="card composer chat-compose">
+          <div class="row"><span class="tiny muted">To</span><select id="chatTo"></select></div>
+          <textarea id="chatText" rows="2" placeholder="Message the team as the boss…"></textarea>
+          <div class="row"><span class="tiny muted" id="chatHint">Idle agents answer right away. Busy ones see it when they check messages.</span><span class="spacer"></span><button class="btn primary" id="btnChatSend">Send</button></div>
+        </div>
       </div>
 
       <div class="panel" id="panel-log" hidden>

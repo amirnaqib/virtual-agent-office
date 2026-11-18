@@ -1,11 +1,12 @@
 {
   "name": "virtual-agent-office",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A top-down pixel virtual office where AI coding CLIs (Claude Code, Codex, Antigravity, Gemini, Hermes and more) work as a team: a leader splits the boss's task, members type at their desks, report back, and the leader delivers a compiled report to the boss desk.",
   "type": "module",
   "bin": {
     "virtual-agent-office": "bin/vao.js",
-    "vao": "bin/vao.js"
+    "vao": "bin/vao.js",
+    "vao-office-mcp": "bin/office-mcp.js"
   },
   "main": "server/index.js",
   "files": [
@@ -28,6 +29,7 @@
     "gemini-cli",
     "hermes",
     "multi-agent",
+    "mcp",
     "pixel-art",
     "virtual-office"
   ],

@@ -5,13 +5,13 @@ import { findPath } from './path.js';
 import { packSprite, packCharacterFrame } from './assets.js';
 
 const WALK_SPEED = 62; // px per second
-const BUSY = new Set(['planning', 'working', 'compiling', 'assigning']);
+const BUSY = new Set(['planning', 'working', 'compiling', 'assigning', 'replying']);
 const CODE_GLYPHS = ['{', '}', ';', '<', '>', '/', '=', '+', '(', ')', '0', '1', '#', '*'];
 const rand = (a, b) => a + Math.random() * (b - a);
 
 const STATUS_WORD = {
   briefing: 'GETTING BRIEF', planning: 'PLANNING', assigning: 'ASSIGNING', working: 'TYPING', reporting: 'REPORTING',
-  compiling: 'COMPILING', delivering: 'DELIVERING', waiting: 'WAITING', error: 'ERROR', done: 'DONE',
+  compiling: 'COMPILING', delivering: 'DELIVERING', waiting: 'WAITING', error: 'ERROR', done: 'DONE', replying: 'REPLYING',
 };
 
 export class Scene {
@@ -35,6 +35,7 @@ export class Scene {
     this.time = 0;
     this.scale = 1;
     this.bossBubbleUntil = 0;
+    this.bossQuestions = 0;
 
     canvas.addEventListener('mousemove', (e) => this.onMove(e));
     canvas.addEventListener('mouseleave', () => { this.hoverId = null; canvas.style.cursor = ''; });
@@ -124,6 +125,8 @@ export class Scene {
 
   setUnread(n) { this.unread = n; }
 
+  setBossQuestions(n) { this.bossQuestions = n; }
+
   cancelWander(a, incomingWalk) {
     const wandering = a.cur?.wander || a.queue.some((q) => q.wander);
     if (!wandering) return;
@@ -139,6 +142,19 @@ export class Scene {
       if (!a) return;
       this.cancelWander(a, true);
       a.queue.push({ type: 'walk', to: p.to });
+      return;
+    }
+    if (p.kind === 'msg') {
+      const from = this.actors.get(p.from);
+      const label = p.msgKind === 'question' ? 'ASK' : p.msgKind === 'reply' ? 'RE' : 'MSG';
+      const toName = p.to === 'everyone' ? 'ALL' : (this.actors.get(p.to)?.name || '').split(' ')[0];
+      if (from) from.chatBubble = { text: `${label} → ${toName}`.toUpperCase(), kind: p.msgKind, until: this.time + 3.5 };
+      const targets = p.to === 'everyone' ? [...this.actors.keys()].filter((id) => id !== p.from && id !== 'boss') : [p.to];
+      for (const t of targets) {
+        const a = this.anchorOf(p.from);
+        const b = this.anchorOf(t);
+        if (a && b) this.papers.push({ envelope: true, msgKind: p.msgKind, x0: a.x, y0: a.y - 6, x1: b.x, y1: b.y - 6, t: 0, dur: 800 });
+      }
       return;
     }
     if (p.kind === 'paper') {
@@ -259,6 +275,7 @@ export class Scene {
   }
 
   paperArrived(p) {
+    if (p.envelope) return;
     if (p.inbox) { this.leaderStack = 0; this.bossBubbleUntil = this.time + 6; }
     else if (p.stack) this.leaderStack++;
     else {
@@ -476,7 +493,8 @@ export class Scene {
       const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
       const x = p.x0 + (p.x1 - p.x0) * e;
       const y = p.y0 + (p.y1 - p.y0) * e - Math.sin(Math.PI * k) * 22;
-      g.drawImage(S.paperSprite(), Math.round(x - 3), Math.round(y - 4));
+      if (p.envelope) g.drawImage(S.envelopeSprite(p.msgKind), Math.round(x - 4), Math.round(y - 3));
+      else g.drawImage(S.paperSprite(), Math.round(x - 3), Math.round(y - 4));
     }
     // code particles
     for (const p of this.particles) {
@@ -512,10 +530,14 @@ export class Scene {
     let text = null;
     let color = '#ffffff';
     let ink = '#1b1424';
+    const chatting = a.chatBubble && this.time < a.chatBubble.until;
     if (a.isBoss) {
       const n = Math.max(0, this.unread - this.pendingInbox());
-      if (n > 0 || this.time < this.bossBubbleUntil) { text = n > 0 ? `${n} NEW` : 'THANKS!'; color = '#f2c94c'; }
+      if (chatting) { text = a.chatBubble.text; color = '#9fd8ff'; }
+      else if (this.bossQuestions > 0) { text = `? ${this.bossQuestions} QUESTION${this.bossQuestions > 1 ? 'S' : ''}`; color = '#f2c94c'; }
+      else if (n > 0 || this.time < this.bossBubbleUntil) { text = n > 0 ? `${n} NEW` : 'THANKS!'; color = '#f2c94c'; }
     } else if (a.status === 'error') { text = '!'; color = '#e94f4f'; ink = '#ffffff'; }
+    else if (chatting) { text = a.chatBubble.text; color = a.chatBubble.kind === 'question' ? '#f2c94c' : a.chatBubble.kind === 'reply' ? '#9fe39f' : '#9fd8ff'; }
     else if (a.status === 'done' && this.time < a.doneUntil) { text = '✓'; color = '#6fcf6f'; }
     else if (BUSY.has(a.status) || ['briefing', 'reporting', 'delivering', 'waiting'].includes(a.status)) {
       if (hot) text = (a.activity && BUSY.has(a.status) ? a.activity : STATUS_WORD[a.status] || a.status).toUpperCase().replace(/[^\x20-\x7E✓…★]/g, '').slice(0, 26);

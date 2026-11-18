@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { which, splitArgs, fill, truncate } from './util.js';
 
 /**
@@ -28,11 +29,18 @@ export const ENGINES = {
       full: '--dangerously-skip-permissions',
     },
     parser: 'claude-stream',
-    build({ agent, autonomy, extra }) {
+    chat: 'mcp',
+    build({ agent, autonomy, extra, office, tmpFile }) {
       const args = ['-p', '--output-format', 'stream-json', '--verbose'];
       if (agent.model) args.push('--model', agent.model);
       if (autonomy === 'edit') args.push('--permission-mode', 'acceptEdits');
       if (autonomy === 'full') args.push('--dangerously-skip-permissions');
+      if (office) {
+        // Per-run MCP config: the office tools are always allowed, even in read-only mode.
+        const cfg = tmpFile('office-mcp.json');
+        fs.writeFileSync(cfg, JSON.stringify({ mcpServers: { office: officeMcpServer(office) } }), { mode: 0o600 });
+        args.push('--mcp-config', cfg, '--allowedTools', 'mcp__office');
+      }
       args.push(...extra);
       return { args, stdin: true };
     },
@@ -50,11 +58,14 @@ export const ENGINES = {
       full: '--dangerously-bypass-approvals-and-sandbox',
     },
     parser: 'text',
-    build({ agent, autonomy, extra, tmpFile }) {
+    chat: 'shell',
+    build({ agent, autonomy, extra, tmpFile, office }) {
       const args = ['exec', '--skip-git-repo-check'];
       if (agent.model) args.push('-m', agent.model);
       if (autonomy === 'safe') args.push('--sandbox', 'read-only');
       if (autonomy === 'edit') args.push('--full-auto');
+      // The office helper talks to 127.0.0.1, which the workspace sandbox blocks by default.
+      if (office && autonomy === 'edit') args.push('-c', 'sandbox_workspace_write.network_access=true');
       if (autonomy === 'full') args.push('--dangerously-bypass-approvals-and-sandbox');
       const outFile = tmpFile('codex-last.txt');
       args.push('--output-last-message', outFile, ...extra, '-');
@@ -74,6 +85,7 @@ export const ENGINES = {
       full: '--dangerously-skip-permissions',
     },
     parser: 'text',
+    chat: 'shell',
     build({ agent, autonomy, extra, prompt }) {
       const args = [];
       if (agent.model) args.push('--model', agent.model);
@@ -96,6 +108,7 @@ export const ENGINES = {
       full: '--yolo',
     },
     parser: 'text',
+    chat: 'shell',
     build({ agent, autonomy, extra, prompt }) {
       const args = [];
       if (agent.model) args.push('-m', agent.model);
@@ -118,6 +131,7 @@ export const ENGINES = {
       full: '--yolo',
     },
     parser: 'text',
+    chat: 'shell',
     build({ agent, autonomy, extra, prompt }) {
       const args = ['chat', '-Q'];
       if (agent.model) args.push('-m', agent.model);
@@ -135,6 +149,7 @@ export const ENGINES = {
     install: 'Any command. Use {prompt}, {model}, {workspace} placeholders. Without {prompt} the prompt is sent on stdin.',
     autonomy: { safe: 'up to your command', edit: 'up to your command', full: 'up to your command' },
     parser: 'text',
+    chat: 'shell',
     build({ agent, extra, prompt, workspace }) {
       const tpl = (agent.customCommand || '').trim();
       if (!tpl) throw new Error('Custom engine needs a command template, e.g. `aider --yes-always --message {prompt}`');
@@ -154,9 +169,27 @@ export const ENGINES = {
     install: 'Built in. Simulates work so you can try the office without any CLI.',
     autonomy: { safe: 'simulated', edit: 'simulated', full: 'simulated' },
     parser: 'mock',
+    chat: 'sim',
     build() { return { mock: true }; },
   },
 };
+
+export const BRIDGE = fileURLToPath(new URL('../bin/office-mcp.js', import.meta.url));
+
+/** stdio MCP server entry for the office bridge (same shape for Claude Code, Gemini, …). */
+export function officeMcpServer(office) {
+  return {
+    type: 'stdio',
+    command: process.execPath,
+    args: [BRIDGE],
+    env: { VAO_URL: office.url, VAO_TOKEN: office.token, VAO_AGENT: office.agentName },
+  };
+}
+
+/** The shell command an agent uses to talk to the office. */
+export function bridgeCommand() {
+  return `"${process.execPath}" "${BRIDGE}"`;
+}
 
 export function engineCommand(engineId, agent) {
   if (engineId === 'custom') {
@@ -179,6 +212,7 @@ export function detectEngines() {
       modelHint: e.modelHint,
       install: e.install,
       autonomy: e.autonomy,
+      chat: e.chat,
       installed: id === 'mock' || id === 'custom' ? true : Boolean(found),
       path: found,
     };

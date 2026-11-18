@@ -48,6 +48,7 @@ export async function startServer(opts = {}) {
     if (!hostAllowed(req)) { res.writeHead(403); return res.end('Forbidden host'); }
     let url;
     try { url = new URL(req.url, 'http://x'); } catch { res.writeHead(400); return res.end(); }
+    if (url.pathname === '/api/office') return officeApi(req, res);
     let p = decodeURIComponent(url.pathname);
     let root = PUBLIC;
     if (p.startsWith('/custom-assets/')) { root = assetsDir; p = p.slice('/custom-assets'.length); }
@@ -68,6 +69,21 @@ export async function startServer(opts = {}) {
       fs.createReadStream(file).pipe(res);
     });
   });
+
+  // Agents' office bridge (MCP server / shell helper) talks to this endpoint with a per-run token.
+  function officeApi(req, res) {
+    const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
+    if (req.method !== 'POST') return send(405, { ok: false, error: 'POST only' });
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (c) => { body += c; if (body.length > 64 * 1024) { send(413, { ok: false, error: 'Too large' }); req.destroy(); } });
+    req.on('end', async () => {
+      let json;
+      try { json = JSON.parse(body || '{}'); } catch { return send(400, { ok: false, error: 'Bad JSON' }); }
+      try { send(200, { ok: true, ...(await orch.chat.http(req.headers.authorization, json)) }); }
+      catch (e) { send(e.status || 400, { ok: false, error: e.message }); }
+    });
+  }
 
   const wss = new WebSocketServer({
     server,
@@ -118,6 +134,17 @@ export async function startServer(opts = {}) {
     'task:submit': ({ text, agentId }) => { const t = orch.submit({ text, agentId }); return { type: 'ok', what: 'task:submit', id: t.id }; },
     'task:cancel': ({ id }) => { orch.cancel(id); },
     'report:read': ({ id }) => { orch.markRead(id); },
+    'boss:send': ({ to, text, replyTo }) => {
+      let target;
+      if (replyTo) {
+        target = orch.chat.find(replyTo)?.from;
+        if (!target || target === 'boss') throw new Error('That message is gone.');
+      } else {
+        target = to === 'everyone' || state.agent(to) ? to : orch.chat.resolve(to, 'boss');
+      }
+      const m = orch.chat.post({ from: 'boss', to: target, text, kind: replyTo ? 'reply' : 'message', replyTo: replyTo || null });
+      return { type: 'ok', what: 'boss:send', id: m.id };
+    },
     'history:clear': () => { state.history = state.history.filter((t) => t.status === 'running'); state.saveHistory(); emit('history', { history: state.history }); },
   };
 
@@ -143,6 +170,10 @@ export async function startServer(opts = {}) {
     server.once('error', reject);
     server.listen(port, host, resolve);
   });
+
+  const port_ = server.address().port;
+  const localHost = ['0.0.0.0', '::', 'localhost', '127.0.0.1'].includes(host) ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host;
+  orch.officeUrl = `http://${localHost}:${port_}`;
 
   const shutdown = () => { killAll(); server.close(); process.exit(0); };
   process.once('SIGINT', shutdown);

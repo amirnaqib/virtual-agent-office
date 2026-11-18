@@ -20,7 +20,41 @@ function roleInfo(role) {
   };
 }
 
-export function mockOutput({ agent, phase, task = '', members = [], reports = [], assignment = '', leaderName = 'the leader' }) {
+const QUESTIONS = {
+  front: ['Which file should the shared colours live in?', 'Is the contact form posting to /api/contact?', 'Do we want a dark mode variant now or later?'],
+  back: ['What should the API return on validation errors — 400 with a field list?', 'Which port does the dev server use?', 'Do we store submissions in a file or a database for now?'],
+  test: ['Is there an existing test runner I should use?', 'Which flows are most important to cover first?'],
+  doc: ['Should the README include screenshots?', 'Who is the audience for the docs: users or developers?'],
+  any: ['Is anyone touching src/index.js? I need to edit it.', 'Should I keep everything in one file or split it up?'],
+};
+const ANSWERS = [
+  'Good question. Keep it simple for now: use the existing folder structure and note it in your report.',
+  'Go with the option that keeps files separate from other people\'s areas. I\'ll mention it in the summary.',
+  'Yes, do that. If it turns into a big change, flag it in your report instead.',
+  'Split it up: one file per concern, and keep your files out of other people\'s folders.',
+];
+
+export function mockQuestion(agent) {
+  const role = agent.role || '';
+  const pool = /front|ui|design|web/i.test(role) ? QUESTIONS.front : /back|api|server|data/i.test(role) ? QUESTIONS.back
+    : /test|qa/i.test(role) ? QUESTIONS.test : /doc|writ|research/i.test(role) ? QUESTIONS.doc : QUESTIONS.any;
+  return pick([...pool, ...QUESTIONS.any]);
+}
+
+export function mockReply(question = '') {
+  if (/api|endpoint|return/i.test(question)) return 'Use /api/contact and return 400 with a list of field errors. (simulated)';
+  if (/colou?r|style|css/i.test(question)) return 'Put shared styles in src/styles/shared.css so nobody collides. (simulated)';
+  if (/port/i.test(question)) return 'Dev server runs on 5173. (simulated)';
+  if (/one file|split/i.test(question)) return 'Split it up: one file per concern, and keep your files out of other people\'s folders. (simulated)';
+  if (/touching|edit/i.test(question)) return 'Not me. Go ahead, just keep the change small. (simulated)';
+  return `${pick(ANSWERS)} (simulated)`;
+}
+
+export function mockOutput({ agent, phase, task = '', members = [], reports = [], assignment = '', leaderName = 'the leader', question = '' }) {
+  if (phase === 'chat') {
+    return { durationMs: rand(1800, 3200), lines: [{ kind: 'say', text: 'Reading the message…' }], text: mockReply(question) };
+  }
+
   if (phase === 'plan') {
     const people = members.length ? members : [agent];
     const assignments = people.map((m) => ({

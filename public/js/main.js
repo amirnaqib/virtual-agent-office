@@ -8,10 +8,10 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STEPS = ['briefing', 'planning', 'working', 'compiling', 'delivering'];
 const STEP_LABEL = { briefing: 'Brief', planning: 'Plan', working: 'Work', compiling: 'Compile', delivering: 'Deliver' };
-const BUSY = new Set(['planning', 'working', 'compiling', 'assigning']);
+const BUSY = new Set(['planning', 'working', 'compiling', 'assigning', 'replying']);
 
 const S = {
-  config: null, engines: {}, status: {}, logs: {}, tasks: new Map(), feed: [],
+  config: null, engines: {}, status: {}, logs: {}, tasks: new Map(), feed: [], chat: [],
   tab: 'boss', selected: null, home: '', assetsDir: '', connected: false, demo: false,
 };
 
@@ -74,6 +74,7 @@ function handle(m) {
       S.feed = [];
       for (const [id, list] of Object.entries(S.logs)) for (const l of list) S.feed.push({ id, ...l });
       S.feed.sort((a, b) => a.t - b.t);
+      S.chat = m.runtime.chat || [];
       scene.sync(S.config, S.engines);
       for (const [id, st] of Object.entries(S.status)) scene.setStatus(id, st);
       renderAll();
@@ -115,6 +116,23 @@ function handle(m) {
         toast(`📥 ${m.leaderName || 'The team'} delivered a report${m.status === 'failed' ? ' (with problems)' : ''}.`, m.status === 'done' ? 'good' : 'error');
       }
       scheduleRender();
+      break;
+    }
+    case 'chat': {
+      S.chat.push(m.message);
+      if (S.chat.length > 400) S.chat.splice(0, 100);
+      const msg = m.message;
+      if (msg.to === 'boss' && msg.kind === 'question') toast(`❓ ${msg.fromName} asks you: ${msg.text.slice(0, 140)}`, '');
+      else if (msg.to === 'boss' && msg.kind === 'reply') toast(`💬 ${msg.fromName}: ${msg.text.slice(0, 140)}`, 'good');
+      renderChatBadge();
+      if (S.tab === 'chat') appendChat(msg);
+      break;
+    }
+    case 'chat:update': {
+      const msg = S.chat.find((x) => x.id === m.id);
+      if (msg) msg.answered = m.answered;
+      renderChatBadge();
+      if (S.tab === 'chat') renderChat();
       break;
     }
     case 'history':
@@ -178,7 +196,8 @@ function renderAll() {
   $('#wsPath').parentElement.title = `Workspace: ${ws}`;
   $('#brandAvatar').src = (avatar(S.config.boss.look).match(/src="([^"]+)"/) || [])[1] || '';
   $('#demoPill').hidden = !S.config.agents.some((a) => a.engine === 'mock');
-  renderTarget(); renderTaskNow(); renderInbox(); renderTeam(); renderLogFilter();
+  renderTarget(); renderTaskNow(); renderInbox(); renderTeam(); renderLogFilter(); renderChatTo(); renderChatBadge();
+  if (S.tab === 'chat') renderChat();
   if (S.tab === 'agent') renderAgentPanel();
   if (S.tab === 'log') renderFeed();
 }
@@ -332,11 +351,75 @@ function appendLine(box, l, withName, noScroll) {
   if (box.firstElementChild?.textContent.startsWith('No output yet')) box.innerHTML = '';
   const div = document.createElement('div');
   div.className = `l ${l.kind}`;
-  const prefix = l.kind === 'tool' ? '› ' : l.kind === 'err' ? '! ' : '';
+  const prefix = l.kind === 'tool' ? '› ' : l.kind === 'err' ? '! ' : l.kind === 'chat' ? '💬 ' : '';
   div.innerHTML = `${withName ? `<span class="ts">${fmtTime(l.t)}</span> <span class="who" style="color:${S.engines[agentById(l.id)?.engine]?.color || '#fff'}">${esc(agentById(l.id)?.name || '?')}</span> ` : ''}${esc(prefix + l.text)}`;
   box.appendChild(div);
   while (box.childElementCount > 500) box.firstElementChild.remove();
   if (!noScroll && nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+const openQuestions = () => S.chat.filter((m) => m.to === 'boss' && m.kind === 'question' && !m.answered);
+
+function renderChatBadge() {
+  const n = openQuestions().length;
+  $('#chatBadge').hidden = !n;
+  $('#chatBadge').textContent = n;
+  scene.setBossQuestions(n);
+}
+
+function renderChatTo() {
+  const sel = $('#chatTo');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="everyone">Everyone (the leader answers)</option>'
+    + S.config.agents.map((a) => `<option value="${a.id}">${isLeader(a.id) ? '★ ' : ''}${esc(a.name)}</option>`).join('');
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function chatItem(m) {
+  const who = (id, name) => (id === 'boss' ? `<b>${esc(name)}</b> <span class="muted">(you)</span>` : `<b>${esc(name)}</b>`);
+  const lookOf = (id) => (id === 'boss' ? S.config.boss.look : agentById(id)?.look);
+  const orig = m.replyTo ? S.chat.find((x) => x.id === m.replyTo) : null;
+  const open = m.to === 'boss' && m.kind === 'question' && !m.answered;
+  const label = m.kind === 'question' ? 'ask' : m.kind;
+  return `<div class="msg ${m.from === 'boss' ? 'boss' : ''} ${open ? 'open' : ''}" data-msg="${m.id}">
+    ${avatar(lookOf(m.from), 'xs')}
+    <div class="body">
+      <div class="head">${who(m.from, m.fromName)} → ${m.to === 'everyone' ? '<b>everyone</b>' : who(m.to, m.toName)} <span class="chip ${m.kind}">${label}</span><span>${fmtTime(m.ts)}</span></div>
+      ${orig ? `<div class="re">re: ${esc(orig.text.slice(0, 90))}${orig.text.length > 90 ? '…' : ''}</div>` : ''}
+      <div class="text">${esc(m.text)}</div>
+      ${open ? `<div class="answer"><input data-answer="${m.id}" placeholder="Answer ${esc(m.fromName)}…" autocomplete="off"><button class="btn sm primary" data-answer-send="${m.id}">Reply</button></div>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderChat() {
+  const box = $('#chatList');
+  box.innerHTML = S.chat.length
+    ? S.chat.map(chatItem).join('')
+    : '<div class="empty chat">No chatter yet. While they work, agents can ask the leader, each other or you. You can also message anyone here, even when no task is running.</div>';
+  box.scrollTop = box.scrollHeight;
+}
+
+function appendChat(m) {
+  const box = $('#chatList');
+  if (box.querySelector('.empty')) box.innerHTML = '';
+  const near = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.insertAdjacentHTML('beforeend', chatItem(m));
+  if (m.replyTo) {
+    const orig = S.chat.find((x) => x.id === m.replyTo);
+    const el = box.querySelector(`[data-msg="${m.replyTo}"]`);
+    if (orig && el) el.outerHTML = chatItem(orig);
+  }
+  if (near || m.from === 'boss') box.scrollTop = box.scrollHeight;
+}
+
+async function bossSend(payload) {
+  const text = (payload.text || '').trim();
+  if (!text) return false;
+  return act('boss:send', { ...payload, text });
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +431,7 @@ function renderLogFilter() {
   sel.innerHTML = '<option value="">Everyone</option>' + S.config.agents.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
   sel.value = [...sel.options].some((o) => o.value === cur) ? cur : '';
 }
-const feedVisible = (l) => (!$('#logFilter').value || l.id === $('#logFilter').value) && ($('#logVerbose').checked || ['say', 'tool', 'err'].includes(l.kind));
+const feedVisible = (l) => (!$('#logFilter').value || l.id === $('#logFilter').value) && ($('#logVerbose').checked || ['say', 'tool', 'err', 'chat'].includes(l.kind));
 function renderFeed() {
   const box = $('#logFeed');
   box.innerHTML = '';
@@ -371,9 +454,10 @@ function appendFeed(l) {
 function switchTab(tab) {
   S.tab = tab;
   for (const b of document.querySelectorAll('.tab')) b.classList.toggle('active', b.dataset.tab === tab);
-  for (const p of ['boss', 'team', 'log', 'agent']) $(`#panel-${p}`).hidden = p !== tab;
+  for (const p of ['boss', 'team', 'chat', 'log', 'agent']) $(`#panel-${p}`).hidden = p !== tab;
   if (tab !== 'agent') { S.selected = null; scene.select(null); }
   if (tab === 'log') renderFeed();
+  if (tab === 'chat') { renderChatTo(); renderChat(); }
 }
 
 function openAgent(id) {
@@ -395,7 +479,7 @@ function renderEngineTable() {
     const e = S.engines[id];
     const builtin = id === 'custom' || id === 'mock';
     return `<div class="engine-row"><span class="${e.installed ? 'ok' : 'no'}">${e.installed ? '✓' : '·'}</span>
-      <span><b style="color:${e.color}">${esc(e.label)}</b>${e.bin ? `<br><code>${esc(e.bin)}</code>` : ''}</span>
+      <span><b style="color:${e.color}">${esc(e.label)}</b>${e.bin ? `<br><code>${esc(e.bin)}</code>` : ''}<br><span class="tiny muted" title="How this engine chats with the team mid-task">💬 ${e.chat === 'mcp' ? 'MCP tools (auto)' : e.chat === 'shell' ? 'office shell cmd' : 'simulated'}</span></span>
       <span class="muted">${builtin ? esc(e.install) : e.installed ? esc(e.path) : `Not found. ${esc(e.install)}`}</span></div>`;
   }).join('');
   $('#pathsInfo').innerHTML = `Office data: <code>${esc(S.home)}</code><br>Asset pack folder: <code>${esc(S.assetsDir)}</code> ${hasPack() ? '— <b>pack loaded ✓</b>' : '— none (using built-in pixel art)'}`;
@@ -418,6 +502,7 @@ function openSettings() {
 const scene = new Scene($('#office'), {
   onSelect: (id) => { if (id) openAgent(id); else if (S.tab === 'agent') switchTab('team'); },
   onBoss: () => {
+    if (openQuestions().length) { switchTab('chat'); $(`[data-answer="${openQuestions()[0].id}"]`)?.focus(); return; }
     switchTab('boss');
     const first = finishedTasks().find((t) => !t.read && t.status !== 'cancelled');
     if (first) openReport(first.id);
@@ -435,6 +520,13 @@ const builder = createBuilder({
 });
 
 document.addEventListener('click', (e) => {
+  const ans = e.target.closest('[data-answer-send]');
+  if (ans) {
+    const id = ans.dataset.answerSend;
+    const input = document.querySelector(`[data-answer="${id}"]`);
+    bossSend({ replyTo: id, text: input?.value }).then((ok) => { if (ok && input) input.value = ''; });
+    return;
+  }
   const t = e.target.closest('[data-edit],[data-lead],[data-open],[data-report],[data-cancel],[data-agent],[data-tab]');
   if (!t) return;
   if (t.dataset.tab) return switchTab(t.dataset.tab);
@@ -457,6 +549,13 @@ $('#btnDirectSend').addEventListener('click', async () => {
 });
 $('#directText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('#btnDirectSend').click(); });
 $('#btnBack').addEventListener('click', () => switchTab('team'));
+$('#btnChatSend').addEventListener('click', async () => {
+  if (await bossSend({ to: $('#chatTo').value, text: $('#chatText').value })) $('#chatText').value = '';
+});
+$('#chatText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#btnChatSend').click(); } });
+$('#chatList').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.dataset.answer) document.querySelector(`[data-answer-send="${e.target.dataset.answer}"]`)?.click();
+});
 $('#btnHire').addEventListener('click', () => builder.open({}));
 $('#btnHire2').addEventListener('click', () => builder.open({}));
 $('#btnBoss').addEventListener('click', () => builder.open({ boss: S.config.boss, officeName: S.config.officeName }));

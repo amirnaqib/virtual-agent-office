@@ -3,6 +3,8 @@ import path from 'node:path';
 import { runAgent } from './runner.js';
 import { planPrompt, workPrompt, compilePrompt, parsePlan, extractReport } from './prompts.js';
 import { uid, delay, slugify, truncate } from './util.js';
+import { OfficeChat } from './chat.js';
+import { ENGINES, bridgeCommand } from './engines.js';
 
 const LOG_LIMIT = 400;
 
@@ -22,6 +24,10 @@ export class Orchestrator {
     this.controller = null;
     this.status = {};
     this.logs = {};
+    this.locks = new Map();
+    this.running = new Map();
+    this.officeUrl = null; // set by the HTTP server so agents can reach the office
+    this.chat = new OfficeChat(this);
   }
 
   // -- runtime status ------------------------------------------------------
@@ -44,7 +50,7 @@ export class Orchestrator {
   fx(payload) { this.emit('fx', payload); }
 
   snapshot() {
-    return { status: this.status, logs: this.logs, queue: this.queue.map(publicTask), current: this.current ? publicTask(this.current) : null };
+    return { status: this.status, logs: this.logs, queue: this.queue.map(publicTask), current: this.current ? publicTask(this.current) : null, chat: this.chat.snapshot() };
   }
 
   // -- task lifecycle ------------------------------------------------------
@@ -129,21 +135,69 @@ export class Orchestrator {
     }
   }
 
-  /** Run an agent with logs/status wiring. */
-  async run(agent, prompt, phase, mock) {
+  /** One process per agent at a time: work runs and reply turns queue up here. */
+  withAgent(agentId, fn) {
+    const prev = this.locks.get(agentId) || Promise.resolve();
+    const next = prev.catch(() => {}).then(fn);
+    const tail = next.catch(() => {});
+    this.locks.set(agentId, tail);
+    tail.then(() => { if (this.locks.get(agentId) === tail) this.locks.delete(agentId); });
+    return next;
+  }
+
+  isRunning(agentId) { return this.running.has(agentId); }
+
+  /** How this agent can chat during a work run. */
+  chatMode(agent) {
+    const mode = ENGINES[agent.engine]?.chat || 'none';
+    if (mode === 'sim') return { mode };
+    if (!this.officeUrl) return { mode: 'none' };
+    return { mode, cmd: bridgeCommand() };
+  }
+
+  /** Low-level run with logs wired up (no lock, never throws on cancel). */
+  async exec(agent, prompt, phase, { office = null, mock, signal, timeoutMs } = {}) {
     const s = this.state.config.settings;
     const res = await runAgent({
       agent,
       prompt,
       phase,
       workspace: s.workspace,
-      timeoutMs: s.timeoutMin * 60000,
-      signal: this.controller.signal,
+      timeoutMs: timeoutMs ?? s.timeoutMin * 60000,
+      signal: signal ?? this.controller?.signal,
       onActivity: ({ kind, text }) => this.log(agent, kind, text),
       mock,
+      office,
     });
-    if (!res.ok && res.error) this.log(agent, 'err', res.error);
-    if (this.controller.signal.aborted) throw new Error('Cancelled');
+    if (!res.ok && res.error && !res.aborted) this.log(agent, 'err', res.error);
+    return res;
+  }
+
+  /** A task run (plan / work / compile). Work runs get an office pass so the agent can chat. */
+  async run(agent, prompt, phase, mock = {}) {
+    const taskId = this.current?.id;
+    const signal = this.controller.signal;
+    const res = await this.withAgent(agent.id, async () => {
+      if (signal.aborted) return { ok: false, aborted: true, text: '', error: 'Cancelled' };
+      let token = null;
+      let office = null;
+      if (phase === 'work') {
+        token = this.chat.issueToken(agent.id, taskId);
+        if (this.officeUrl) office = { url: this.officeUrl, token, agentName: agent.name };
+        this.running.set(agent.id, token);
+      }
+      try {
+        return await this.exec(agent, prompt, phase, {
+          office,
+          signal,
+          mock: { ...mock, chat: phase === 'work' ? this.chat.bound(agent.id, taskId) : null, chatTargets: [...(agent.id === this.state.leader?.id ? [] : ['leader']), ...this.state.config.agents.filter((a) => a.id !== agent.id && a.id !== this.state.leader?.id).map((a) => a.name)] },
+        });
+      } finally {
+        if (token) { this.chat.revokeToken(token); this.running.delete(agent.id); }
+      }
+    });
+    if (phase === 'work') this.chat.afterRun(agent.id);
+    if (signal.aborted) throw new Error('Cancelled');
     return res;
   }
 
@@ -211,7 +265,7 @@ export class Orchestrator {
     this.pushTask(task);
     this.setStatus(leader, 'compiling', 'Compiling the final report');
     const reports = task.assignments.map((a) => ({ name: a.name, role: a.role, task: a.task, ok: a.status === 'done', report: a.report || '', error: a.error || '' }));
-    const compRes = await this.run(leader, compilePrompt({ office, leader, task: task.text, plan: task.plan, reports }), 'compile', {
+    const compRes = await this.run(leader, compilePrompt({ office, leader, task: task.text, plan: task.plan, reports, chat: this.chat.forTask(task.id) }), 'compile', {
       task: task.text, reports,
     });
     task.final = compRes.ok
@@ -237,7 +291,7 @@ export class Orchestrator {
     a.status = 'working';
     this.pushTask(task);
     this.setStatus(agent, 'working', 'Reading the assignment');
-    const res = await this.run(agent, workPrompt({ office, agent, leader, task: task.text, assignment: a.task, teammates, workspace: office.settings.workspace }), 'work', {
+    const res = await this.run(agent, workPrompt({ office, agent, leader, task: task.text, assignment: a.task, teammates, workspace: office.settings.workspace, chat: this.chatMode(agent) }), 'work', {
       assignment: a.task, leaderName: leader.name,
     });
     a.status = res.ok ? 'done' : 'failed';
@@ -270,7 +324,7 @@ export class Orchestrator {
     this.pushTask(task);
     this.fx({ kind: 'paper', from: 'boss', to: agent.id });
     this.setStatus(agent, 'working', 'Reading the task');
-    const res = await this.run(agent, workPrompt({ office, agent, leader: agent, task: task.text, assignment: task.text, teammates: [], workspace: office.settings.workspace, direct: true }), 'work', {
+    const res = await this.run(agent, workPrompt({ office, agent, leader: agent, task: task.text, assignment: task.text, teammates: [], workspace: office.settings.workspace, direct: true, chat: this.chatMode(agent) }), 'work', {
       assignment: task.text, leaderName: office.boss.name,
     });
     const a = task.assignments[0];
@@ -298,7 +352,9 @@ export class Orchestrator {
       const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}_${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
       const file = path.join(dir, `${stamp}-${slugify(task.text)}.md`);
       const team = task.assignments.map((a) => `### ${a.name} (${a.role || 'member'} · ${a.engine}) — ${a.status}\n**Assignment:** ${a.task}\n\n${a.report || a.error || ''}`).join('\n\n');
-      const md = `# ${truncate(task.text.split('\n')[0], 120)}\n\n- Status: **${task.status}**\n- ${task.kind === 'team' ? `Leader: **${task.leaderName}**` : `Assigned directly to **${task.leaderName}**`}\n- Started: ${new Date(task.createdAt).toLocaleString()}\n\n## Task\n${task.text}\n\n---\n\n${task.final}\n\n---\n\n## Appendix: team reports\n${task.plan?.summary ? `_Plan: ${task.plan.summary}_\n\n` : ''}${team}\n`;
+      const talk = this.chat.forTask(task.id);
+      const chatMd = talk.length ? `\n\n## Appendix: team chat\n${talk.map((m) => `- **${m.fromName} → ${m.toName}**${m.kind === 'question' ? ' (question)' : m.kind === 'reply' ? ' (reply)' : ''}: ${m.text.replace(/\n+/g, ' ')}`).join('\n')}\n` : '';
+      const md = `# ${truncate(task.text.split('\n')[0], 120)}\n\n- Status: **${task.status}**\n- ${task.kind === 'team' ? `Leader: **${task.leaderName}**` : `Assigned directly to **${task.leaderName}**`}\n- Started: ${new Date(task.createdAt).toLocaleString()}\n\n## Task\n${task.text}\n\n---\n\n${task.final}\n\n---\n\n## Appendix: team reports\n${task.plan?.summary ? `_Plan: ${task.plan.summary}_\n\n` : ''}${team}\n${chatMd}`;
       fs.writeFileSync(file, md);
       return file;
     } catch (e) {

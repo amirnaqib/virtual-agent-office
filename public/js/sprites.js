@@ -496,6 +496,16 @@ export function paperSprite() {
   }, true);
 }
 
+export function envelopeSprite(kind = 'message') {
+  const flap = kind === 'question' ? '#f2c94c' : kind === 'reply' ? '#6fcf6f' : '#9fd8ff';
+  return cached(`env|${kind}`, 9, 7, (p) => {
+    p.rect(0, 0, 9, 7, '#fbfbf7');
+    p.px(0, 0, flap); p.px(8, 0, flap);
+    p.rect(1, 1, 2, 1, flap); p.rect(6, 1, 2, 1, flap); p.rect(3, 2, 3, 1, flap); p.px(4, 3, flap);
+    p.rect(0, 6, 9, 1, '#c9ccd3');
+  }, true);
+}
+
 export function paperStack(n) {
   const k = Math.min(n, 6);
   return cached(`stack|${k}`, 10, 4 + k * 2, (p) => {
