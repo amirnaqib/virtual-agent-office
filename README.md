@@ -48,7 +48,7 @@ npm run demo
 Then point it at a real project:
 
 ```bash
-node bin/vao.js --workspace /path/to/your/project
+node bin/vao.js start --workspace /path/to/your/project
 ```
 
 To get a global `vao` / `virtual-agent-office` command:
@@ -59,7 +59,47 @@ npm install -g .
 
 The office opens at <http://127.0.0.1:4317>. On first launch you get a sample team. Every agent whose CLI isn't installed starts on the Demo engine. Open **Team → Edit** to switch engines, rename people and restyle them.
 
-### CLI options
+## Let Claude set it up for you
+
+Your users don't need to learn any commands. Teach Claude Code the office once, then they just ask, for example *"set up an office with 3 agents, make Siti the leader with a blue hijab, then have the team add a login page"*. Claude builds the team, opens the office, hands out the task, relays the agents' questions and summarises the report.
+
+Pick one:
+
+- **Plugin (recommended):** inside Claude Code, run both:
+
+  ```
+  /plugin marketplace add amirnaqib/virtual-agent-office
+  /plugin install virtual-agent-office@virtual-agent-office
+  ```
+
+  While the repo is private, users need GitHub access on their machine (`gh auth login && gh auth setup-git`).
+- **One command:** `vao setup-claude` installs the skill for every Claude Code session on the machine (`~/.claude/skills/`). Use `vao setup-claude --project <dir>` for a single project.
+- **In this repo:** `CLAUDE.md` already loads the skill, so Claude Code opened here knows it.
+
+The skill lives at [`plugins/virtual-agent-office/skills/virtual-agent-office/SKILL.md`](plugins/virtual-agent-office/skills/virtual-agent-office/SKILL.md). Claude still needs `vao` installed (`npm install -g github:amirnaqib/virtual-agent-office`, or `npm install -g .` from a clone), and the skill tells it how to install it if missing.
+
+## Commands
+
+Everything in the browser is also a command, so scripts and Claude can drive the office. If an office is open, commands talk to it live; if not, team commands edit the saved office and `vao task` runs headless.
+
+```
+vao [start] [-w <dir>]        open the office (agents work in <dir>, default: current folder)
+vao stop | vao doctor         close it | check engines, team, workspace, skill
+vao team [--json]             list the team
+vao hire "Siti" --role "Tech Lead" --engine claude --model sonnet --leader --hair hijab --hair-color blue --shirt white
+vao edit "Ali" --engine codex --autonomy auto-edit --eyewear glasses
+vao fire "Farah" | vao lead "Ali" | vao boss --name "Amir" --office "Amir's Studio"
+vao task "Add a login page" [--to "Ali"] [--wait]
+vao status | vao chat         what everyone is doing | team chat + questions for the boss
+vao say "Siti" "How is it going?" | vao say --reply <message-id> "Use teal"
+vao reports | vao report last
+vao config --workspace <dir> --timeout 30 --walk 2600
+vao setup-claude [--project <dir>]
+```
+
+Run `vao help` for every option, including all look options: skin, 12 hair styles (including hijab/tudung), colours, eyewear and extras.
+
+### Start options
 
 | Option | Default | |
 |---|---|---|
@@ -168,6 +208,8 @@ server/runner.js      process spawning, streaming, timeouts, cancel
 server/prompts.js     plan / work / compile / reply prompts, plan parsing
 server/chat.js        office chat: routing, inboxes, waits, reply turns
 bin/office-mcp.js     "office" MCP server (stdio) + shell helper
+server/cli.js         every `vao` command (live over WebSocket, or offline on the saved office)
+plugins/…/SKILL.md    the Claude Code skill (also loaded by CLAUDE.md)
 public/js/scene.js    canvas renderer, walking, typing, papers
 public/js/sprites.js  procedural pixel art (characters & furniture)
 public/js/map.js      office floor plan · path.js A* pathfinding
@@ -192,6 +234,8 @@ No build step, no framework, one runtime dependency (`ws`).
 - Bila anda hantar tugasan dari **meja boss**, ketua datang ambil, rancang dan bahagikan kerja. Setiap agent **duduk di meja masing-masing dan menaip**. CLI sebenar sedang berjalan dan output boleh dilihat secara langsung.
 - **Agent boleh berbual semasa bekerja** melalui MCP server `office`: tanya ketua, tanya rakan sepasukan, atau tanya boss (anda), dan tunggu jawapan. Claude Code disambung secara automatik. CLI lain guna arahan shell yang sama. Semua perbualan ada dalam tab **Chat**, dan anda boleh jawab atau mesej sesiapa sahaja dari situ.
 - Bila siap, agent **berjalan ke meja ketua** untuk hantar laporan. Ketua **kompil** semua laporan dan **bawa ke meja boss**. Laporan masuk ke inbox anda dan disimpan sebagai Markdown dalam projek.
+
+**Guna terus melalui Claude:** pasang plugin (`/plugin marketplace add amirnaqib/virtual-agent-office`, kemudian `/plugin install virtual-agent-office@virtual-agent-office`) atau jalankan `vao setup-claude`. Selepas itu pengguna cuma perlu minta kepada Claude, contohnya *"set pasukan 2 orang, Siti ketua bertudung biru, kemudian suruh mereka buat halaman login"*. Claude akan uruskan semuanya: bina pasukan, buka pejabat, beri tugasan, sampaikan soalan agent, dan ringkaskan laporan.
 
 Cuba dahulu tanpa sebarang CLI:
 

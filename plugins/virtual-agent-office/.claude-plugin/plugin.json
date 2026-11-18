@@ -1,0 +1,8 @@
+{
+  "name": "virtual-agent-office",
+  "description": "Teaches Claude to install, set up and drive Virtual Agent Office (the `vao` CLI): build an agent team, pick the leader, give tasks, chat with agents and read reports.",
+  "author": { "name": "amirnaqib" },
+  "repository": "https://github.com/amirnaqib/virtual-agent-office",
+  "license": "MIT",
+  "keywords": ["agents", "multi-agent", "claude-code", "codex", "gemini", "antigravity", "hermes", "pixel-art"]
+}

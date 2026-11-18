@@ -175,10 +175,25 @@ export async function startServer(opts = {}) {
   const localHost = ['0.0.0.0', '::', 'localhost', '127.0.0.1'].includes(host) ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host;
   orch.officeUrl = `http://${localHost}:${port_}`;
 
-  const shutdown = () => { killAll(); server.close(); process.exit(0); };
+  const shownHost = host === '0.0.0.0' || host === '::' ? 'localhost' : host;
+  const url = `http://${shownHost}:${port_}`;
+
+  // Let `vao` commands (and Claude) find this office.
+  const runtimeFile = path.join(home, 'runtime.json');
+  fs.writeFileSync(runtimeFile, JSON.stringify({ pid: process.pid, url: orch.officeUrl, port: port_, startedAt: Date.now(), workspace: state.config.settings.workspace }, null, 2));
+  const unregister = () => {
+    try { if (JSON.parse(fs.readFileSync(runtimeFile, 'utf8')).pid === process.pid && JSON.parse(fs.readFileSync(runtimeFile, 'utf8')).port === port_) fs.rmSync(runtimeFile); } catch { /* gone */ }
+  };
+  process.once('exit', unregister);
+
+  const shutdown = () => { killAll(); unregister(); server.close(); process.exit(0); };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
 
-  const shownHost = host === '0.0.0.0' || host === '::' ? 'localhost' : host;
-  return { url: `http://${shownHost}:${server.address().port}`, state, orch, server, close: () => { killAll(); wss.close(); server.close(); } };
+  const close = () => {
+    killAll(); unregister(); process.off('exit', unregister); process.off('SIGINT', shutdown); process.off('SIGTERM', shutdown);
+    for (const c of clients) c.terminate();
+    wss.close(); server.close();
+  };
+  return { url, state, orch, server, close };
 }

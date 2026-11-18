@@ -1,0 +1,13 @@
+{
+  "name": "virtual-agent-office",
+  "owner": { "name": "amirnaqib" },
+  "description": "Virtual Agent Office: let Claude set up and run a pixel office of AI coding agents for you.",
+  "plugins": [
+    {
+      "name": "virtual-agent-office",
+      "source": "./plugins/virtual-agent-office",
+      "description": "Teaches Claude to install, set up and drive Virtual Agent Office (the `vao` CLI): build an agent team, pick the leader, give tasks, chat with agents and read reports.",
+      "category": "productivity"
+    }
+  ]
+}
